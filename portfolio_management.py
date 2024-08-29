@@ -6,8 +6,35 @@ from scipy import stats
 from scipy.optimize import minimize
 import yfinance as yf
 from datetime import datetime, timedelta
-from user_data import load_user_data, save_user_data
-import requests
+import firebase_admin
+from firebase_admin import credentials, firestore
+
+# Initialize Firebase
+if not firebase_admin._apps:
+    cred = credentials.Certificate('path/to/your/firebase/credentials.json')
+    firebase_admin.initialize_app(cred)
+db = firestore.client()
+
+def load_user_data(user_id):
+    try:
+        user_ref = db.collection('users').document(user_id)
+        user_data = user_ref.get().to_dict()
+        if user_data is None:
+            # Initialize with an empty portfolio if no data exists
+            user_data = {"portfolio": {}}
+        return user_data
+    except Exception as e:
+        st.error(f"Error loading user data: {e}")
+        return {"portfolio": {}}
+
+def save_user_data(user_id, data):
+    try:
+        user_ref = db.collection('users').document(user_id)
+        # Set the document with the new data, creating it if it does not exist
+        user_ref.set(data, merge=True)
+    except Exception as e:
+        st.error(f"Error saving user data: {e}")
+
 
 def get_stock_value(ticker, quantity):
     try:
@@ -19,7 +46,6 @@ def get_stock_value(ticker, quantity):
     except Exception as e:
         st.error(f"Error fetching stock value for {ticker}: {e}")
         return 0
-        
 
 def perform_portfolio_overview(portfolio_returns, returns, portfolio):
     st.header("Portfolio Overview")
@@ -53,7 +79,7 @@ def display_current_portfolio(portfolio):
     else:
         st.info("Your portfolio is empty. Add some stocks to get started!")
 
-def add_stock_to_portfolio(user_id, portfolio):
+def add_stock_to_portfolio(user_id, db):
     st.header("Add Stock to Portfolio")
     col1, col2, col3 = st.columns([2, 1, 1])
     with col1:
@@ -62,13 +88,18 @@ def add_stock_to_portfolio(user_id, portfolio):
         new_quantity = st.number_input("Enter quantity:", min_value=1, step=1)
     with col3:
         if st.button("Add to Portfolio"):
-            if new_stock in portfolio:
-                portfolio[new_stock] += new_quantity
+            doc_ref = db.collection("portfolios").document(user_id)
+            doc = doc_ref.get()
+            if doc.exists:
+                portfolio = doc.to_dict()
+                if new_stock in portfolio:
+                    portfolio[new_stock] += new_quantity
+                else:
+                    portfolio[new_stock] = new_quantity
             else:
-                portfolio[new_stock] = new_quantity
-            user_data = load_user_data(user_id)
-            user_data["portfolio"] = portfolio
-            save_user_data(user_id, user_data)
+                portfolio = {new_stock: new_quantity}
+            
+            doc_ref.set(portfolio)
             st.success(f"Added {new_quantity} shares of {new_stock} to your portfolio.")
 
 def perform_portfolio_analysis(portfolio_returns):
@@ -246,14 +277,19 @@ def perform_monte_carlo_var(returns, portfolio, confidence_level=0.95, num_simul
     fig.update_layout(title='Monte Carlo Simulations of Portfolio Value', xaxis_title='Days', yaxis_title='Portfolio Value')
     st.plotly_chart(fig, use_container_width=True)
 
-def portfolio_management_interface(user_id):
+def portfolio_management_interface(user_id, db):
     st.title('📊 Advanced Portfolio Management')
     
-    user_data = load_user_data(user_id)
-    portfolio = user_data.get("portfolio", {})
+    # Fetch portfolio data from Firestore
+    doc_ref = db.collection("portfolios").document(user_id)
+    doc = doc_ref.get()
+    if doc.exists:
+        portfolio = doc.to_dict()
+    else:
+        portfolio = {}
     
     display_current_portfolio(portfolio)
-    add_stock_to_portfolio(user_id, portfolio)
+    add_stock_to_portfolio(user_id, db)
     
     if portfolio:
         # Fetch historical data
@@ -282,8 +318,6 @@ def portfolio_management_interface(user_id):
             perform_portfolio_optimization(returns, portfolio)
         elif selected_analysis == "Monte Carlo Simulation":
             perform_monte_carlo_var(returns, portfolio)
-
-# You may want to add any additional helper functions or class definitions here
 
 if __name__ == "__main__":
     # This block will be executed if the script is run directly
